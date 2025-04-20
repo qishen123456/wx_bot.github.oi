@@ -1,0 +1,617 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>临时 P2P 聊天室</title>
+    <style>
+        /* --- 基本样式 --- */
+        body { font-family: sans-serif; margin: 0; padding: 15px; background-color: #f4f7f6; display: flex; justify-content: center; color: #333; }
+        #app-container { max-width: 700px; width: 100%; background: #fff; padding: 25px; border-radius: 10px; box-shadow: 0 5px 20px rgba(0, 0, 0, 0.08); display: flex; flex-direction: column; }
+        h1 { text-align: center; color: #007bff; margin-top: 0; margin-bottom: 20px; }
+        button { padding: 10px 20px; cursor: pointer; margin: 5px; font-size: 1em; border: none; border-radius: 5px; background-color: #007bff; color: white; transition: background-color 0.2s ease; }
+        button:hover:not(:disabled) { background-color: #0056b3; }
+        button:disabled { background-color: #a0cfff; cursor: not-allowed; }
+        input[type="text"] { padding: 10px; border: 1px solid #ccc; border-radius: 5px; flex-grow: 1; margin-right: 10px; font-size: 1em; }
+        p, label { margin-bottom: 10px; line-height: 1.5; }
+
+        /* --- 状态与连接 --- */
+        #status { margin-top: 15px; margin-bottom: 15px; font-weight: bold; text-align: center; min-height: 1.2em; padding: 10px; border-radius: 5px; background-color: #e9ecef; border: 1px solid #dee2e6; }
+        .status-error { background-color: #f8d7da; color: #721c24; border-color: #f5c6cb; }
+        .status-success { background-color: #d4edda; color: #155724; border-color: #c3e6cb; }
+        #connection-info { padding: 15px; border: 1px dashed #ccc; background-color: #f8f9fa; border-radius: 5px; margin-bottom: 20px; text-align: center; }
+        #share-url { width: 100%; padding: 8px; box-sizing: border-box; border: 1px solid #ccc; background: #eee; text-align: center; margin-top: 10px; font-family: monospace; cursor: pointer; }
+        #copy-url-btn { margin-top: 5px; }
+
+        /* --- 聊天区域 --- */
+        #chat-area { margin-top: 20px; display: flex; flex-direction: column; flex-grow: 1; visibility: hidden; /* Hidden until connected */ }
+        #chatbox { height: 350px; width: 100%; overflow-y: scroll; border: 1px solid #ccc; padding: 15px; background-color: #f4f7f6; margin-bottom: 15px; box-sizing: border-box; border-radius: 5px; scroll-behavior: smooth; }
+        .message-wrapper { display: flex; margin-bottom: 10px; }
+        .message { padding: 10px 15px; border-radius: 18px; max-width: 75%; word-wrap: break-word; box-shadow: 0 1px 1px rgba(0, 0, 0, 0.1); line-height: 1.4; }
+        .message-sent { background-color: #dcf8c6; border-bottom-right-radius: 5px; margin-left: auto; }
+        .message-received { background-color: #ffffff; border: 1px solid #eee; border-bottom-left-radius: 5px; margin-right: auto; }
+        .message-sender { font-size: 0.8em; color: #6c757d; margin-bottom: 3px; display: block; font-weight: bold; }
+        .message-system { font-style: italic; color: #6c757d; text-align: center; font-size: 0.9em; margin: 15px 0; width: 100%; }
+        #input-area { display: flex; align-items: center; margin-top: auto; }
+        #message-input { flex-grow: 1; }
+        #select-file-btn { background: none; border: none; font-size: 1.6em; cursor: pointer; color: #007bff; padding: 5px 10px; }
+        #select-file-btn:hover { color: #0056b3; }
+        #file-input { display: none; }
+        #file-status { margin-top: 8px; margin-bottom: 8px; font-size: 0.9em; color: #555; min-height: 1.2em; text-align: center; }
+        .download-link { display: inline-block; margin: 5px 5px 5px 0; padding: 5px 10px; color: #007bff; text-decoration: none; border: 1px solid #007bff; border-radius: 4px; background-color: #e7f3ff; font-size: 0.9em; transition: background-color 0.2s ease; }
+        .download-link:hover { background-color: #cfe2ff; text-decoration: underline; }
+        .file-info-wrapper { /* Wrapper for download links in system messages */ text-align: center; margin: 5px 0; }
+    </style>
+    <!-- PeerJS Library -->
+    <script src="https://unpkg.com/peerjs@1.4.7/dist/peerjs.min.js"></script>
+</head>
+<body>
+    <div id="app-container">
+        <h1>临时 P2P 聊天室</h1>
+
+        <!-- Connection Info & Sharing -->
+        <div id="connection-info">
+            <p>分享下面的链接给朋友加入聊天室 (需在同一 WiFi):</p>
+            <input type="text" id="share-url" readonly value="正在生成链接...">
+            <button id="copy-url-btn" onclick="copyShareUrl()">复制链接</button>
+            <p id="my-peer-id-display" style="font-size: 0.9em; color: #666; margin-top: 10px;">我的 Peer ID: (连接中...)</p>
+        </div>
+
+        <!-- Status Display -->
+        <div id="status">状态：正在初始化...</div>
+
+        <!-- Chat Area -->
+        <div id="chat-area">
+            <div id="chatbox">
+                <!-- Messages will appear here -->
+            </div>
+            <p id="file-status"></p>
+            <div id="input-area">
+                <input type="text" id="message-input" placeholder="输入消息..." disabled>
+                <button id="send-btn" title="发送消息" disabled>发送</button>
+                <input type="file" id="file-input">
+                <button id="select-file-btn" title="发送文件" disabled>📎</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // --- Configuration ---
+        const ROOM_PREFIX = "localchat-"; // Prefix for PeerJS IDs in this app
+        const CHUNK_SIZE = 16 * 1024; // 16 KB for file transfer
+
+        // --- DOM Elements ---
+        const shareUrlInput = document.getElementById('share-url');
+        const copyUrlBtn = document.getElementById('copy-url-btn');
+        const myPeerIdDisplay = document.getElementById('my-peer-id-display');
+        const statusDiv = document.getElementById('status');
+        const chatAreaDiv = document.getElementById('chat-area');
+        const chatboxDiv = document.getElementById('chatbox');
+        const messageInput = document.getElementById('message-input');
+        const sendBtn = document.getElementById('send-btn');
+        const fileInput = document.getElementById('file-input');
+        const selectFileBtn = document.getElementById('select-file-btn');
+        const fileStatusP = document.getElementById('file-status');
+
+        // --- State ---
+        let peer = null;
+        let myPeerId = null;
+        let roomID = null;
+        let connections = {}; // { peerId: DataConnection }
+        let fileReceiveStates = {}; // { fileId: { meta, chunks: [], receivedSize } }
+        // Note: File sending state is managed more locally in the sendFile function
+
+        // --- Initialization ---
+        window.onload = initialize;
+
+        function initialize() {
+            // Check URL for existing room ID (hash)
+            if (window.location.hash) {
+                roomID = window.location.hash.substring(1); // Get ID from URL hash (e.g., #roomId)
+            } else {
+                roomID = generateRoomID();
+                // Update URL without reloading page to make it shareable
+                history.pushState(null, null, '#' + roomID);
+            }
+
+            shareUrlInput.value = window.location.href;
+            updateStatus('状态：正在连接到信令服务器...');
+
+            // Initialize PeerJS. If no ID is provided, the server generates one.
+            // We don't need a predictable ID here as connections are managed via room logic.
+            peer = new Peer(undefined, {
+                // Optional: Specify host/port if using your own PeerServer
+                // host: 'localhost',
+                // port: 9000,
+                // path: '/myapp'
+                // Using the public PeerServer by default.
+                debug: 2 // Set debug level (0-3) for console logs from PeerJS
+            });
+
+            setupPeerEventHandlers();
+            setupUIEventHandlers();
+        }
+
+        function setupPeerEventHandlers() {
+            peer.on('open', (id) => {
+                myPeerId = id; // PeerJS provides the ID assigned by the server
+                console.log('[PeerJS] 连接到信令服务器成功，我的 Peer ID:', myPeerId);
+                myPeerIdDisplay.textContent = `我的 Peer ID: ${myPeerId}`;
+                updateStatus(`状态：等待伙伴加入房间 #${roomID}...`, 'success');
+                chatAreaDiv.style.visibility = 'visible'; // Show chat area now
+
+                // Now that we have our ID, try to connect to others already in the room
+                // This needs a mechanism. Simplest: Use a known ID for the "first" person?
+                // Let's use a simpler "everyone connects to everyone" approach for now.
+                // We need a way to discover peers. PeerJS doesn't have room listing directly.
+                // **Workaround/Simplification:** Let's assume for now peers find each other via shared links.
+                // When a new peer connects TO US, we then connect back TO THEM.
+                // A better approach would involve a signaling server extension or a central "introducer" peer.
+
+                // For this simplified version, we rely on 'connection' event.
+                 displaySystemMessage(`你已加入房间 #${roomID}。你的ID是 ${myPeerId.substring(0,6)}...`);
+                 displaySystemMessage("分享页面链接给朋友加入。");
+
+                 // Attempt connection if URL indicates a specific peer to connect to (enhancement - not standard)
+                 // const urlParams = new URLSearchParams(window.location.search);
+                 // const connectTo = urlParams.get('connectTo');
+                 // if (connectTo) {
+                 //     connectToPeer(connectTo);
+                 // }
+            });
+
+            peer.on('connection', (conn) => {
+                 console.log(`[PeerJS] 收到来自 ${conn.peer} 的连接请求`);
+                 displaySystemMessage(`伙伴 (${conn.peer.substring(0,6)}...) 正在连接...`);
+                 setupConnectionEventHandlers(conn);
+                 // Automatically accept and store connection
+                 connections[conn.peer] = conn;
+                 updateChatInputState();
+            });
+
+            peer.on('disconnected', () => {
+                updateStatus('状态：与信令服务器断开连接，尝试重连...', 'error');
+                console.warn('[PeerJS] 与信令服务器断开连接。PeerJS 会尝试自动重连。');
+                 // PeerJS attempts to reconnect automatically.
+                 // You might want to disable input here until reconnected.
+                 enableChatInput(false);
+            });
+
+            peer.on('close', () => {
+                // This happens when peer.destroy() is called.
+                updateStatus('状态：连接已彻底关闭。', 'info');
+                console.log('[PeerJS] Peer 连接已销毁。');
+                cleanup();
+            });
+
+            peer.on('error', (err) => {
+                console.error('[PeerJS] 发生错误:', err);
+                let message = `错误: ${err.message}`;
+                if (err.type === 'peer-unavailable') {
+                    message = `错误：无法连接到伙伴 (${err.message.split(': ')[1] || ''})，对方可能已离线。`;
+                     // Clean up potential dangling connection attempt
+                     delete connections[err.message.split(': ')[1]];
+                } else if (err.type === 'network') {
+                     message = '错误：网络连接问题，无法连接到信令服务器或伙伴。';
+                } else if (err.type === 'server-error') {
+                     message = '错误：信令服务器出错。';
+                } else if (err.type === 'webrtc') {
+                     message = '错误：WebRTC 初始化或连接失败 (详见控制台)。';
+                 }
+                updateStatus(message, 'error');
+                // Consider cleanup based on error type
+                 if (err.type !== 'peer-unavailable') {
+                     // Maybe destroy peer on critical errors?
+                     // peer.destroy();
+                 }
+                 updateChatInputState();
+            });
+        }
+
+        function setupConnectionEventHandlers(conn) {
+             conn.on('open', () => {
+                 console.log(`[PeerJS] 与 ${conn.peer} 的数据连接已建立`);
+                 displaySystemMessage(`已连接到伙伴 (${conn.peer.substring(0,6)}...)！`);
+                 // If this is the first connection, enable input
+                 updateChatInputState();
+                 // Optional: Send a hello message or request state
+                 // conn.send(JSON.stringify({ type: 'hello', payload: { id: myPeerId } }));
+             });
+
+             conn.on('data', (data) => {
+                 console.log(`[PeerJS] 收到来自 ${conn.peer} 的数据`);
+                 handleReceivedData(conn.peer, data);
+             });
+
+             conn.on('close', () => {
+                 console.log(`[PeerJS] 与 ${conn.peer} 的数据连接已关闭`);
+                 displaySystemMessage(`伙伴 (${conn.peer.substring(0,6)}...) 已断开连接。`);
+                 delete connections[conn.peer];
+                 delete fileReceiveStates[conn.peer]; // Clean up potential file transfer state
+                 updateChatInputState();
+             });
+
+              conn.on('error', (err) => {
+                 console.error(`[PeerJS] 与 ${conn.peer} 的数据连接错误:`, err);
+                 displaySystemMessage(`与伙伴 (${conn.peer.substring(0,6)}...) 的连接出错。`);
+                 delete connections[conn.peer];
+                 updateChatInputState();
+             });
+        }
+
+        function setupUIEventHandlers() {
+             sendBtn.addEventListener('click', sendChatMessage);
+             messageInput.addEventListener('keypress', (e) => {
+                 if (e.key === 'Enter' && !e.shiftKey) {
+                     e.preventDefault();
+                     sendChatMessage();
+                 }
+             });
+             selectFileBtn.addEventListener('click', () => fileInput.click());
+             fileInput.addEventListener('change', handleFileSelect);
+        }
+
+        function connectToPeer(peerId) {
+             if (!peer || peer.destroyed) {
+                 updateStatus('错误：PeerJS 未初始化或已销毁', 'error');
+                 return;
+             }
+             if (!peerId || peerId === myPeerId) {
+                 console.warn('[PeerJS] 尝试连接自身或无效 ID:', peerId);
+                 return;
+             }
+             if (connections[peerId]) {
+                 console.log(`[PeerJS] 已存在与 ${peerId} 的连接，跳过。`);
+                 return;
+             }
+
+             console.log(`[PeerJS] 尝试连接到 Peer: ${peerId}`);
+             displaySystemMessage(`正在尝试连接伙伴 (${peerId.substring(0,6)}...)...`);
+
+             try {
+                const conn = peer.connect(peerId, {
+                    reliable: true // Ensure reliable data transfer for chat/files
+                });
+                setupConnectionEventHandlers(conn); // Setup handlers immediately
+                connections[conn.peer] = conn; // Store connection optimistically
+             } catch (error) {
+                console.error(`[PeerJS] 调用 peer.connect 时出错: `, error);
+                updateStatus(`错误: 无法发起与 ${peerId} 的连接`, 'error');
+             }
+        }
+
+        function updateChatInputState() {
+            const hasConnections = Object.keys(connections).length > 0;
+            enableChatInput(hasConnections);
+        }
+
+        // --- UI Helpers ---
+        function generateRoomID(length = 6) {
+             const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
+             let result = '';
+             for (let i = 0; i < length; i++) {
+                 result += chars.charAt(Math.floor(Math.random() * chars.length));
+             }
+             return result;
+        }
+
+        function copyShareUrl() {
+            shareUrlInput.select();
+            try {
+                document.execCommand('copy');
+                updateStatus('状态：链接已复制到剪贴板！', 'success');
+                copyUrlBtn.textContent = '已复制!';
+                setTimeout(() => { copyUrlBtn.textContent = '复制链接'; }, 1500);
+            } catch (err) {
+                console.error('复制失败:', err);
+                updateStatus('状态：复制失败，请手动复制链接。', 'error');
+            }
+        }
+
+        function updateStatus(message, type = 'info') {
+             statusDiv.textContent = message;
+             statusDiv.className = ''; // Reset classes
+             if (type === 'error') statusDiv.classList.add('status-error');
+             else if (type === 'success') statusDiv.classList.add('status-success');
+             console.log(`[UI Status ${type.toUpperCase()}] ${message}`);
+        }
+
+         function enableChatInput(enabled) {
+             messageInput.disabled = !enabled;
+             sendBtn.disabled = !enabled;
+             selectFileBtn.disabled = !enabled;
+         }
+
+        function displaySystemMessage(message) {
+             const msgDiv = document.createElement('div');
+             msgDiv.classList.add('message-system');
+             msgDiv.textContent = message;
+             chatboxDiv.appendChild(msgDiv);
+             scrollToBottom();
+         }
+
+        function displayChatMessage(senderId, message, isSent) {
+             const wrapperDiv = document.createElement('div');
+             wrapperDiv.classList.add('message-wrapper');
+             const msgDiv = document.createElement('div');
+             msgDiv.classList.add('message', isSent ? 'message-sent' : 'message-received');
+             const senderSpan = document.createElement('span');
+             senderSpan.classList.add('message-sender');
+             senderSpan.textContent = isSent ? '我' : `伙伴 (${senderId.substring(0, 6)}...)`;
+             const textNode = document.createTextNode(message);
+             msgDiv.appendChild(senderSpan);
+             msgDiv.appendChild(textNode);
+             wrapperDiv.appendChild(msgDiv);
+             chatboxDiv.appendChild(wrapperDiv);
+             scrollToBottom();
+         }
+
+         function scrollToBottom() {
+             chatboxDiv.scrollTop = chatboxDiv.scrollHeight;
+         }
+
+        // --- Data Sending ---
+        function broadcast(data) {
+            let sentToSomeone = false;
+            Object.values(connections).forEach(conn => {
+                if (conn && conn.open) { // Check if connection is open
+                    try {
+                        conn.send(data);
+                        sentToSomeone = true;
+                    } catch (e) {
+                        console.error(`[Data Send] 发送数据给 ${conn.peer} 失败:`, e);
+                        displaySystemMessage(`向伙伴 (${conn.peer.substring(0,6)}...) 发送数据失败。`);
+                        // Maybe remove this connection?
+                        // delete connections[conn.peer];
+                        // updateChatInputState();
+                    }
+                }
+            });
+             if (!sentToSomeone && Object.keys(connections).length > 0) {
+                 console.warn("[Data Send] 有连接对象，但没有一个处于 open 状态。");
+             }
+            return sentToSomeone;
+        }
+
+        function sendChatMessage() {
+            const message = messageInput.value.trim();
+            if (!message) return;
+            const messageData = { type: 'chat', payload: { text: message } };
+            if (broadcast(JSON.stringify(messageData))) {
+                displayChatMessage(myPeerId, message, true);
+                messageInput.value = '';
+            } else {
+                displaySystemMessage("无法发送消息，当前没有连接到任何伙伴。");
+            }
+        }
+
+        function handleFileSelect(event) {
+            const files = event.target.files;
+            if (!files || files.length === 0) return;
+            if (Object.keys(connections).length === 0) {
+                displaySystemMessage("无法发送文件，未连接到任何伙伴。");
+                return;
+            }
+            const file = files[0];
+            sendFile(file);
+            fileInput.value = null; // Reset file input
+        }
+
+        function sendFile(file) {
+            const fileId = `${myPeerId}-${Date.now()}-${file.name}`;
+            displaySystemMessage(`开始发送文件: ${file.name} (${formatBytes(file.size)})`);
+            fileStatusP.textContent = `开始发送 ${file.name}...`;
+
+            const metadata = {
+                type: 'file-meta',
+                payload: { fileId, name: file.name, size: file.size, type: file.type || 'application/octet-stream', senderId: myPeerId }
+            };
+            broadcast(JSON.stringify(metadata));
+
+            let offset = 0;
+            const reader = new FileReader();
+
+            reader.onload = (e) => {
+                const chunk = e.target.result; // ArrayBuffer
+                // We need to send the chunk *along with* the fileId.
+                // SimplePeer allowed sending raw ArrayBuffer after metadata, but PeerJS data connection expects serializable data.
+                // Best practice: Send an object containing the chunk data (e.g., base64 encoded, or use specific libraries if available)
+                // Simplest (less efficient for large files): Base64 encode
+                // **Correction:** PeerJS `DataConnection.send()` *can* handle ArrayBuffer directly! Let's use that.
+
+                const chunkData = { type: 'file-chunk', payload: { fileId: fileId, data: chunk } };
+                // Re-stringify approach for chunk metadata + data? No, send raw buffer.
+                // OK, let's try sending the raw ArrayBuffer chunk *after* the metadata. Receiver needs to handle this state.
+                // This relies on ordered delivery which 'reliable: true' should provide.
+
+                const success = broadcast(chunk); // Send the raw ArrayBuffer
+
+                if (!success) {
+                    fileStatusP.textContent = `文件 ${file.name} 发送中断（无连接伙伴）。`;
+                    displaySystemMessage(`文件 ${file.name} 发送中止。`);
+                    return; // Stop sending
+                }
+
+                offset += chunk.byteLength;
+                const progress = Math.round((offset / file.size) * 100);
+                fileStatusP.textContent = `正在发送 ${file.name}: ${progress}% (${formatBytes(offset)} / ${formatBytes(file.size)})`;
+
+                if (offset < file.size) {
+                    readNextChunk(reader, file, offset);
+                } else {
+                    const endMarker = { type: 'file-end', payload: { fileId: fileId, name: file.name, senderId: myPeerId } };
+                    broadcast(JSON.stringify(endMarker));
+                    fileStatusP.textContent = `文件 ${file.name} 发送完成！`;
+                    displaySystemMessage(`文件 ${file.name} 已成功发送。`);
+                }
+            };
+
+            reader.onerror = (error) => {
+                console.error(`[File Send ${fileId}] FileReader error:`, error);
+                fileStatusP.textContent = `读取文件 ${file.name} 时出错。`;
+                displaySystemMessage(`发送文件 ${file.name} 时出错。`);
+                // Send abort message?
+                const abortMsg = { type: 'file-abort', payload: { fileId: fileId, reason: 'FileReader error' } };
+                broadcast(JSON.stringify(abortMsg));
+            };
+
+            readNextChunk(reader, file, offset); // Start reading the first chunk
+        }
+
+        function readNextChunk(reader, file, offset) {
+            const slice = file.slice(offset, offset + CHUNK_SIZE);
+            reader.readAsArrayBuffer(slice);
+        }
+
+        // --- Data Receiving ---
+        function handleReceivedData(peerId, data) {
+             // Data can be string (JSON) or ArrayBuffer (file chunk)
+             if (typeof data === 'string') {
+                 try {
+                     const message = JSON.parse(data);
+                     console.log(`[Data Received JSON from ${peerId}]`, message);
+                     const senderId = message.payload?.senderId || peerId; // Use senderId from payload if available
+
+                     switch (message.type) {
+                         case 'chat':
+                             displayChatMessage(senderId, message.payload.text, false);
+                             break;
+                         case 'file-meta':
+                             handleFileMeta(senderId, message.payload);
+                             break;
+                         case 'file-end':
+                             handleFileEnd(senderId, message.payload);
+                             break;
+                         case 'file-abort':
+                             handleFileAbort(senderId, message.payload);
+                             break;
+                         default:
+                             console.warn(`[Data] 收到来自 ${peerId} 的未知类型 JSON 数据:`, message);
+                     }
+                 } catch (e) {
+                     console.error(`[Data] 解析来自 ${peerId} 的 JSON 数据时出错:`, e, data);
+                 }
+             } else if (data instanceof ArrayBuffer) {
+                 console.log(`[Data Received Buffer from ${peerId}] Size: ${data.byteLength}`);
+                 // Assume it's a file chunk based on state
+                 handleFileChunk(peerId, data);
+             } else {
+                 console.warn(`[Data] 收到来自 ${peerId} 的未知格式数据:`, data);
+             }
+        }
+
+        function handleFileMeta(senderId, meta) {
+            const { fileId, name, size, type } = meta;
+            if (!fileId || !name || size === undefined) return;
+            fileReceiveStates[fileId] = { meta, chunks: [], receivedSize: 0 };
+            displaySystemMessage(`(${senderId.substring(0,6)}...) 开始发送文件: ${name} (${formatBytes(size)})`);
+            fileStatusP.textContent = `准备接收来自 (${senderId.substring(0,6)}...) 的 ${name}...`;
+        }
+
+        function handleFileChunk(peerId, chunk) {
+            // Find the active file transfer for this chunk. Needs fileId association.
+            // **Crucial Assumption:** Chunks arrive *after* metadata for the same fileId.
+            // Find the fileId this peer is currently sending us. Fragile if multiple concurrent allowed.
+            let targetFileId = null;
+            for (const id in fileReceiveStates) {
+                // Match based on sender and assume latest metadata is the active one
+                if (fileReceiveStates[id].meta.senderId === peerId) {
+                    targetFileId = id;
+                    break; // Assume only one file transfer active from this peer
+                }
+            }
+
+            if (!targetFileId || !fileReceiveStates[targetFileId]) {
+                console.warn(`[File Receive] 收到来自 ${peerId} 的文件块，但找不到进行中的传输状态。`);
+                return;
+            }
+
+            const state = fileReceiveStates[targetFileId];
+            state.chunks.push(chunk);
+            state.receivedSize += chunk.byteLength;
+            const progress = Math.round((state.receivedSize / state.meta.size) * 100);
+            fileStatusP.textContent = `正在接收来自 (${state.meta.senderId.substring(0,6)}...) 的 ${state.meta.name}: ${progress}%`;
+        }
+
+        function handleFileEnd(senderId, payload) {
+            const { fileId, name } = payload;
+            if (!fileId || !fileReceiveStates[fileId]) return;
+
+            const state = fileReceiveStates[fileId];
+             // Optional: Verify name match state.meta.name === name
+
+            if (state.receivedSize !== state.meta.size) {
+                console.warn(`[File Receive ${fileId}] 文件大小不匹配! 预期: ${state.meta.size}, 收到: ${state.receivedSize}`);
+                displaySystemMessage(`文件 ${state.meta.name} 接收不完整。`);
+                fileStatusP.textContent = `文件 ${state.meta.name} 接收不完整。`;
+            } else {
+                const receivedBlob = new Blob(state.chunks, { type: state.meta.type });
+                displaySystemMessage(`文件 ${state.meta.name} (${formatBytes(state.receivedSize)}) 接收完成。`);
+                fileStatusP.textContent = `文件 ${state.meta.name} 接收完成。`;
+                createDownloadLink(receivedBlob, state.meta.name, senderId);
+            }
+            delete fileReceiveStates[fileId]; // Clean up state
+        }
+
+         function handleFileAbort(senderId, payload) {
+             const { fileId, reason } = payload;
+             if (fileReceiveStates[fileId]) {
+                 displaySystemMessage(`来自 (${senderId.substring(0,6)}...) 的文件 ${fileReceiveStates[fileId].meta.name} 传输中止: ${reason}`);
+                 fileStatusP.textContent = `文件 ${fileReceiveStates[fileId].meta.name} 接收中止。`;
+                 delete fileReceiveStates[fileId];
+             }
+         }
+
+        function createDownloadLink(blob, filename, senderId) {
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.classList.add('download-link');
+            link.href = url;
+            link.download = filename;
+            link.textContent = `下载 ${filename}`; // (来自 ${senderId.substring(0,6)}...)
+
+            // Append link in a system message for clarity
+            const wrapper = document.createElement('div');
+            wrapper.classList.add('file-info-wrapper');
+            wrapper.appendChild(link);
+            chatboxDiv.appendChild(wrapper); // Add download link inside chatbox
+            scrollToBottom();
+
+            link.onclick = () => { setTimeout(() => URL.revokeObjectURL(url), 1500); };
+        }
+
+        // --- Utility Functions ---
+        function formatBytes(bytes, decimals = 2) { /* ... same as before ... */
+             if (!+bytes) return '0 Bytes';
+             const k = 1024;
+             const dm = decimals < 0 ? 0 : decimals;
+             const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
+             const i = Math.floor(Math.log(bytes) / Math.log(k));
+             return `${parseFloat((bytes / Math.pow(k, i)).toFixed(dm))} ${sizes[i]}`;
+        }
+
+        function cleanup() {
+            // Close all data connections
+            Object.values(connections).forEach(conn => {
+                if (conn && conn.close) {
+                    conn.close();
+                }
+            });
+            connections = {};
+            fileReceiveStates = {};
+             // Destroy the PeerJS object
+             if (peer && !peer.destroyed) {
+                 peer.destroy();
+             }
+             peer = null;
+             myPeerId = null;
+             enableChatInput(false);
+             console.log("[Cleanup] Peer and connections cleaned up.");
+        }
+
+        // Close connections when the page is unloaded
+        window.addEventListener('beforeunload', cleanup);
+
+    </script>
+</body>
+</html>
